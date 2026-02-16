@@ -10,6 +10,7 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -18,28 +19,49 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Eco
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BottomSheetScaffold
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberBottomSheetScaffoldState
+import androidx.compose.material3.rememberStandardBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -51,6 +73,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -70,13 +94,16 @@ import java.util.concurrent.Executors
 class MainActivity : ComponentActivity() {
 
     private lateinit var classifier: Classifier
+    private var isLiveClassifier = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
         classifier = try {
             TFLiteClassifier(this).also {
                 Log.i("LeafLens", "Using TFLiteClassifier")
+                isLiveClassifier = true
             }
         } catch (e: Exception) {
             Log.w("LeafLens", "TFLite model not found, falling back to MockClassifier", e)
@@ -85,7 +112,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             LeafLensTheme {
-                LeafLensApp(classifier)
+                LeafLensApp(classifier, isLiveClassifier)
             }
         }
     }
@@ -100,8 +127,9 @@ class MainActivity : ComponentActivity() {
 // Root composable – handles permission state
 // ---------------------------------------------------------------------------
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LeafLensApp(classifier: Classifier) {
+private fun LeafLensApp(classifier: Classifier, isLive: Boolean) {
     var cameraPermissionGranted by remember { mutableStateOf(false) }
     var permissionRequested by remember { mutableStateOf(false) }
 
@@ -117,7 +145,46 @@ private fun LeafLensApp(classifier: Classifier) {
         launcher.launch(Manifest.permission.CAMERA)
     }
 
-    Scaffold { innerPadding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Eco,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("LeafLens", fontWeight = FontWeight.Bold)
+                    }
+                },
+                actions = {
+                    Badge(
+                        containerColor = if (isLive)
+                            MaterialTheme.colorScheme.primary
+                        else
+                            MaterialTheme.colorScheme.error,
+                        contentColor = if (isLive)
+                            MaterialTheme.colorScheme.onPrimary
+                        else
+                            MaterialTheme.colorScheme.onError,
+                    ) {
+                        Text(
+                            text = if (isLive) "Live" else "Mock",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
+            )
+        },
+    ) { innerPadding ->
         Box(modifier = Modifier.padding(innerPadding)) {
             if (cameraPermissionGranted) {
                 CameraScreen(classifier)
@@ -129,9 +196,10 @@ private fun LeafLensApp(classifier: Classifier) {
 }
 
 // ---------------------------------------------------------------------------
-// Camera screen with preview + scan + results
+// Camera screen with preview + scan + bottom sheet results
 // ---------------------------------------------------------------------------
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CameraScreen(classifier: Classifier) {
     val context = LocalContext.current
@@ -144,119 +212,196 @@ private fun CameraScreen(classifier: Classifier) {
     var prediction by remember { mutableStateOf<Prediction?>(null) }
     var scanning by remember { mutableStateOf(false) }
 
+    val sheetState = rememberStandardBottomSheetState(
+        initialValue = SheetValue.Hidden,
+        skipHiddenState = false,
+    )
+    val scaffoldState = rememberBottomSheetScaffoldState(bottomSheetState = sheetState)
+
+    // Show/hide the bottom sheet when prediction changes
+    LaunchedEffect(prediction) {
+        if (prediction != null) {
+            sheetState.expand()
+        } else {
+            sheetState.hide()
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose { cameraExecutor.shutdown() }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-
-        // Camera preview – top half
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .padding(16.dp)
-                .clip(RoundedCornerShape(16.dp))
-        ) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    val previewView = PreviewView(ctx).apply {
-                        scaleType = PreviewView.ScaleType.FILL_CENTER
-                    }
-                    val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                    cameraProviderFuture.addListener({
-                        val cameraProvider = cameraProviderFuture.get()
-                        val preview = Preview.Builder().build().also {
-                            it.setSurfaceProvider(previewView.surfaceProvider)
-                        }
-                        try {
-                            cameraProvider.unbindAll()
-                            cameraProvider.bindToLifecycle(
-                                lifecycleOwner,
-                                CameraSelector.DEFAULT_BACK_CAMERA,
-                                preview,
-                                imageCapture,
-                            )
-                        } catch (e: Exception) {
-                            Log.e("LeafLens", "Camera bind failed", e)
-                        }
-                    }, ContextCompat.getMainExecutor(ctx))
-                    previewView
-                },
-            )
-        }
-
-        // Bottom controls + results
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-
-            // Scan button
-            Button(
-                onClick = {
-                    if (scanning) return@Button
-                    scanning = true
-                    prediction = null
-
-                    imageCapture.takePicture(
-                        cameraExecutor,
-                        object : ImageCapture.OnImageCapturedCallback() {
-                            override fun onCaptureSuccess(image: ImageProxy) {
-                                val bitmap: Bitmap? = image.toBitmap()
-                                image.close()
-                                scope.launch {
-                                    prediction = classifier.predict(bitmap)
-                                    scanning = false
-                                }
-                            }
-
-                            override fun onError(exc: ImageCaptureException) {
-                                Log.e("LeafLens", "Capture failed", exc)
-                                scanning = false
-                            }
-                        },
-                    )
-                },
-                enabled = !scanning,
+    BottomSheetScaffold(
+        scaffoldState = scaffoldState,
+        sheetPeekHeight = 0.dp,
+        sheetContainerColor = MaterialTheme.colorScheme.surface,
+        sheetShape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        sheetShadowElevation = 8.dp,
+        sheetContent = {
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp),
-                shape = RoundedCornerShape(12.dp),
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .animateContentSize(
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessLow,
+                        )
+                    ),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (scanning) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(24.dp),
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        strokeWidth = 2.dp,
-                    )
-                } else {
-                    Text("Scan Leaf", style = MaterialTheme.typography.titleMedium)
+                prediction?.let { pred ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Scan Results",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        IconButton(onClick = { prediction = null }) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Dismiss",
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    ResultCard(pred)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    GuidanceCard(pred.label)
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    OutlinedButton(
+                        onClick = { prediction = null },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                    ) {
+                        Text("Scan Again")
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
                 }
             }
+        },
+    ) {
+        // Camera preview fills the entire screen
+        Box(modifier = Modifier.fillMaxSize()) {
+            // Camera preview
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(0.dp))
+            ) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        val previewView = PreviewView(ctx).apply {
+                            scaleType = PreviewView.ScaleType.FILL_CENTER
+                        }
+                        val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                        cameraProviderFuture.addListener({
+                            val cameraProvider = cameraProviderFuture.get()
+                            val preview = Preview.Builder().build().also {
+                                it.setSurfaceProvider(previewView.surfaceProvider)
+                            }
+                            try {
+                                cameraProvider.unbindAll()
+                                cameraProvider.bindToLifecycle(
+                                    lifecycleOwner,
+                                    CameraSelector.DEFAULT_BACK_CAMERA,
+                                    preview,
+                                    imageCapture,
+                                )
+                            } catch (e: Exception) {
+                                Log.e("LeafLens", "Camera bind failed", e)
+                            }
+                        }, ContextCompat.getMainExecutor(ctx))
+                        previewView
+                    },
+                )
 
-            // Result card
-            prediction?.let { pred ->
-                Spacer(modifier = Modifier.height(16.dp))
-                ResultCard(pred)
-                Spacer(modifier = Modifier.height(8.dp))
-                GuidanceCard(pred.label)
-                Spacer(modifier = Modifier.height(8.dp))
+                // Gradient overlay at the bottom for contrast
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(160.dp)
+                        .align(Alignment.BottomCenter)
+                        .background(
+                            brush = Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.5f),
+                                )
+                            )
+                        )
+                )
+            }
 
-                OutlinedButton(
-                    onClick = { prediction = null },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
+            // Scan button floating at bottom
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(bottom = 32.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Button(
+                    onClick = {
+                        if (scanning) return@Button
+                        scanning = true
+                        prediction = null
+
+                        imageCapture.takePicture(
+                            cameraExecutor,
+                            object : ImageCapture.OnImageCapturedCallback() {
+                                override fun onCaptureSuccess(image: ImageProxy) {
+                                    val bitmap: Bitmap? = image.toBitmap()
+                                    image.close()
+                                    scope.launch {
+                                        prediction = classifier.predict(bitmap)
+                                        scanning = false
+                                    }
+                                }
+
+                                override fun onError(exc: ImageCaptureException) {
+                                    Log.e("LeafLens", "Capture failed", exc)
+                                    scanning = false
+                                }
+                            },
+                        )
+                    },
+                    enabled = !scanning,
+                    modifier = Modifier.height(56.dp),
+                    shape = CircleShape,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                    ),
+                    elevation = ButtonDefaults.buttonElevation(
+                        defaultElevation = 6.dp,
+                    ),
                 ) {
-                    Text("Reset")
+                    if (scanning) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Scan Leaf", style = MaterialTheme.typography.titleMedium)
+                    }
                 }
             }
-
-            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }
@@ -268,11 +413,13 @@ private fun CameraScreen(classifier: Classifier) {
 @Composable
 private fun ResultCard(prediction: Prediction) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.primaryContainer,
         ),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
@@ -314,8 +461,10 @@ private fun GuidanceCard(label: String) {
     val advice = offlineAdvice(label)
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant,
         ),
