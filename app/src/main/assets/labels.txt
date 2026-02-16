@@ -1,0 +1,6 @@
+Cocoa:cocoa_black_pod
+Cocoa:healthy
+Maize:maize_rust
+Maize:healthy
+Tomato:tomato_early_blight
+Tomato:healthy
