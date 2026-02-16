@@ -61,6 +61,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import ai.leaflens.app.classifier.Classifier
 import ai.leaflens.app.classifier.MockClassifier
 import ai.leaflens.app.classifier.Prediction
+import ai.leaflens.app.classifier.TFLiteClassifier
 import ai.leaflens.app.ui.LeafLensTheme
 import ai.leaflens.app.util.toBitmap
 import kotlinx.coroutines.launch
@@ -68,15 +69,30 @@ import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
 
-    private val classifier: Classifier = MockClassifier()
+    private lateinit var classifier: Classifier
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        classifier = try {
+            TFLiteClassifier(this).also {
+                Log.i("LeafLens", "Using TFLiteClassifier")
+            }
+        } catch (e: Exception) {
+            Log.w("LeafLens", "TFLite model not found, falling back to MockClassifier", e)
+            MockClassifier()
+        }
+
         setContent {
             LeafLensTheme {
                 LeafLensApp(classifier)
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        (classifier as? TFLiteClassifier)?.close()
     }
 }
 
